@@ -65,6 +65,7 @@ func main() {
 	http.HandleFunc("/check-geometry", checkGeometryHandler)
 	// http.HandleFunc("/fix-geometry", fixGeometryHandler)
 	http.HandleFunc("/v2/fix-geometry", fixGeometryHandler2)
+	http.HandleFunc("/clean-topology", cleanTopologyHandler)
 	// Start the HTTP server on port 8080
 	fmt.Println("Server is listening on port 8080...")
 	http.ListenAndServe(":8080", nil)
@@ -130,11 +131,11 @@ func fixGeometryHandler2(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if !geo.IsValid() {
+			// fmt.Println(featureCollection.Features[i].Properties["PC6"], "after trunc", geo.IsValidReason())
 			geo = geo.MakeValidWithParams(geos.MakeValidLinework, geos.MakeValidDiscardCollapsed)
 			if err != nil {
 				fmt.Println("ERROR Trunc", featureCollection.Features[i].Properties["PC6"])
 			}
-			fmt.Println(featureCollection.Features[i].Properties["PC6"], "fixed?", geo.IsValid())
 		}
 
 		if geo.TypeID() == 6 || geo.TypeID() == 3 {
@@ -272,6 +273,42 @@ func checkGeometryHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(errors)
+}
+
+func cleanTopologyHandler(w http.ResponseWriter, r *http.Request) {
+	multiPartRequest := utils.ReadMultiPartForm(r, "file")
+	var geometryPayload string
+	fmt.Print("Topology cleaning request received.")
+
+	if multiPartRequest.File == "" {
+		if multiPartRequest.Properties.FeatureCollection != "" {
+			geometryPayload = multiPartRequest.Properties.FeatureCollection
+		} else if multiPartRequest.Properties.FilePath != "" {
+			geometryPayload = readFile(multiPartRequest.Properties)
+		} else {
+			sendResponse(w, []byte("ERROR: No suitable files found"))
+			return
+		}
+	} else {
+		fmt.Println("Reading from payload")
+		geometryPayload = multiPartRequest.File
+	}
+
+	cleanedFeatureCollection, err := handlers.CleanTopology(geometryPayload)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("ERROR: Topology cleaning failed: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	jsonFC, _ := json.Marshal(cleanedFeatureCollection)
+
+	if multiPartRequest.Properties.SaveFile {
+		saveFile(multiPartRequest.Properties.FilePath, string(jsonFC))
+		sendResponse(w, []byte("Topology cleaned and file saved"))
+	} else {
+		fmt.Println("Topology cleaning complete. Sending response")
+		sendResponse(w, []byte(jsonFC))
+	}
 }
 
 func sendResponse(w http.ResponseWriter, response []byte) {

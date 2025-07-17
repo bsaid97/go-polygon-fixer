@@ -22,10 +22,6 @@ type Features struct {
 	Geometry any
 }
 
-type routineResult struct {
-	Result *geos.Geom
-	Index  int
-}
 
 var PRECISION int = 7
 
@@ -38,33 +34,63 @@ func TruncateFullGeometry(feature *geos.Geom) (*geos.Geom, error) {
 		return nil, fmt.Errorf(`geometry is nil`)
 	}
 
-	polygons := make(chan routineResult, feature.NumGeometries())
+	// Count total number of polygons to process
+	totalPolygons := 0
 	for i := range feature.NumGeometries() {
 		geometry := feature.Geometry(i)
 		if geometry.IsValid() {
 			if geometry.TypeID() == 3 {
-				go func(polygon *geos.Geom, index int) {
-					polygons <- routineResult{Result: TruncateSinglePolygon(polygon), Index: index}
-				}(geometry, i)
-			}
-
-			if geometry.TypeID() == 6 {
+				totalPolygons++
+			} else if geometry.TypeID() == 6 {
 				for j := range geometry.NumGeometries() {
 					singlePolygon := geometry.Geometry(j)
 					if singlePolygon.TypeID() == 3 {
-						go func(polygon *geos.Geom, index int) {
-							polygons <- routineResult{Result: TruncateSinglePolygon(polygon), Index: index}
-						}(singlePolygon, j)
+						totalPolygons++
 					}
 				}
 			}
 		}
 	}
-	var newPolygons = make([]*geos.Geom, feature.NumGeometries())
 
-	for i := 0; i < feature.NumGeometries(); i++ {
-		res := <-polygons
-		newPolygons[res.Index] = res.Result
+	if totalPolygons == 0 {
+		return nil, fmt.Errorf("no valid polygons found")
+	}
+
+	// Create channel with correct buffer size
+	polygons := make(chan *geos.Geom, totalPolygons)
+	
+	// Launch goroutines to process polygons
+	for i := range feature.NumGeometries() {
+		geometry := feature.Geometry(i)
+		if geometry.IsValid() {
+			if geometry.TypeID() == 3 {
+				go func(polygon *geos.Geom) {
+					polygons <- TruncateSinglePolygon(polygon)
+				}(geometry)
+			} else if geometry.TypeID() == 6 {
+				for j := range geometry.NumGeometries() {
+					singlePolygon := geometry.Geometry(j)
+					if singlePolygon.TypeID() == 3 {
+						go func(polygon *geos.Geom) {
+							polygons <- TruncateSinglePolygon(polygon)
+						}(singlePolygon)
+					}
+				}
+			}
+		}
+	}
+
+	// Collect results from all goroutines
+	var newPolygons = make([]*geos.Geom, 0, totalPolygons)
+	for i := 0; i < totalPolygons; i++ {
+		result := <-polygons
+		if result != nil {
+			newPolygons = append(newPolygons, result)
+		}
+	}
+
+	if len(newPolygons) == 0 {
+		return nil, fmt.Errorf("no valid truncated polygons produced")
 	}
 
 	if len(newPolygons) == 1 {
