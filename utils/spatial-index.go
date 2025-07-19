@@ -139,3 +139,10 @@ func CalculateWGS84Tolerance(precisionDecimals int) float64 {
 	baseTolerance := math.Pow(10, float64(-precisionDecimals))
 	return baseTolerance * 10
 }
+
+// CalculateWGS84ToleranceFromMeters converts meters to WGS84 degrees
+// For WGS84, 1 degree ≈ 111,000 meters at the equator
+func CalculateWGS84ToleranceFromMeters(meters float64) float64 {
+	const metersPerDegree = 111000.0
+	return meters / metersPerDegree
+}

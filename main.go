@@ -61,14 +61,25 @@ type GeomFeature struct {
 }
 
 func main() {
+	log.Printf("=== Starting Go Polygon Fixer Server ===")
+	
+	// Register handlers
 	http.HandleFunc("/dissolve", dissolveHandler)
 	http.HandleFunc("/check-geometry", checkGeometryHandler)
 	// http.HandleFunc("/fix-geometry", fixGeometryHandler)
 	http.HandleFunc("/v2/fix-geometry", fixGeometryHandler2)
 	http.HandleFunc("/clean-topology", cleanTopologyHandler)
+	
+	log.Printf("Registered all HTTP handlers")
+	
 	// Start the HTTP server on port 8080
+	log.Printf("Server is listening on port 8080...")
 	fmt.Println("Server is listening on port 8080...")
-	http.ListenAndServe(":8080", nil)
+	
+	err := http.ListenAndServe(":8080", nil)
+	if err != nil {
+		log.Fatalf("Server failed to start: %v", err)
+	}
 }
 
 func readBody(w http.ResponseWriter, r *http.Request) string {
@@ -276,38 +287,72 @@ func checkGeometryHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func cleanTopologyHandler(w http.ResponseWriter, r *http.Request) {
-	multiPartRequest := utils.ReadMultiPartForm(r, "file")
+	// Add panic recovery to prevent server crashes
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("PANIC recovered in cleanTopologyHandler: %v", r)
+			http.Error(w, "Internal server error", http.StatusInternalServerError)
+		}
+	}()
+	
+	log.Printf("=== Topology cleaning request received ===")
+	log.Printf("Content-Type: %s", r.Header.Get("Content-Type"))
+	
 	var geometryPayload string
-	fmt.Print("Topology cleaning request received.")
-
-	if multiPartRequest.File == "" {
-		if multiPartRequest.Properties.FeatureCollection != "" {
-			geometryPayload = multiPartRequest.Properties.FeatureCollection
-		} else if multiPartRequest.Properties.FilePath != "" {
-			geometryPayload = readFile(multiPartRequest.Properties)
-		} else {
-			sendResponse(w, []byte("ERROR: No suitable files found"))
+	
+	// Check if this is a direct JSON request or multipart form
+	contentType := r.Header.Get("Content-Type")
+	if strings.Contains(contentType, "application/json") {
+		// Handle direct JSON request
+		log.Printf("Handling direct JSON request")
+		geometryPayload = readBody(w, r)
+		if geometryPayload == "" {
+			sendResponse(w, []byte("ERROR: Empty request body"))
 			return
 		}
 	} else {
-		fmt.Println("Reading from payload")
-		geometryPayload = multiPartRequest.File
+		// Handle multipart form request
+		log.Printf("Handling multipart form request")
+		multiPartRequest := utils.ReadMultiPartForm(r, "file")
+		
+		if multiPartRequest.File == "" {
+			if multiPartRequest.Properties.FeatureCollection != "" {
+				geometryPayload = multiPartRequest.Properties.FeatureCollection
+			} else if multiPartRequest.Properties.FilePath != "" {
+				geometryPayload = readFile(multiPartRequest.Properties)
+			} else {
+				sendResponse(w, []byte("ERROR: No suitable files found"))
+				return
+			}
+		} else {
+			log.Printf("Reading from uploaded file")
+			geometryPayload = multiPartRequest.File
+		}
 	}
 
-	cleanedFeatureCollection, err := handlers.CleanTopology(geometryPayload)
+	// Check if shapefile format is requested (you can add a parameter for this)
+	// For now, always generate zip with both formats
+	zipData, err := handlers.CleanTopologyWithShapefile(geometryPayload)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("ERROR: Topology cleaning failed: %v", err), http.StatusInternalServerError)
 		return
 	}
 
-	jsonFC, _ := json.Marshal(cleanedFeatureCollection)
-
-	if multiPartRequest.Properties.SaveFile {
-		saveFile(multiPartRequest.Properties.FilePath, string(jsonFC))
-		sendResponse(w, []byte("Topology cleaned and file saved"))
+	// For direct JSON requests, always return the zip response
+	// For multipart requests, check if file saving is requested
+	if strings.Contains(contentType, "application/json") {
+		log.Printf("Topology cleaning complete. Sending zip response")
+		sendZipResponse(w, zipData)
 	} else {
-		fmt.Println("Topology cleaning complete. Sending response")
-		sendResponse(w, []byte(jsonFC))
+		// This is a multipart form request, check if saving is requested
+		multiPartRequest := utils.ReadMultiPartForm(r, "file")
+		if multiPartRequest.Properties.SaveFile {
+			saveZipFile(multiPartRequest.Properties.FilePath, zipData)
+			sendResponse(w, []byte("Topology cleaned and zip file saved"))
+		} else {
+			log.Printf("Topology cleaning complete. Sending zip response")
+			sendZipResponse(w, zipData)
+		}
 	}
 }
 
@@ -315,4 +360,25 @@ func sendResponse(w http.ResponseWriter, response []byte) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	w.Write(response)
+}
+
+func sendZipResponse(w http.ResponseWriter, zipData []byte) {
+	w.Header().Set("Content-Type", "application/zip")
+	w.Header().Set("Content-Disposition", "attachment; filename=\"cleaned_topology.zip\"")
+	w.WriteHeader(http.StatusOK)
+	w.Write(zipData)
+}
+
+func saveZipFile(filePath string, zipData []byte) {
+	name := strings.Replace(filePath, ".json", "", 1)
+	name = strings.Replace(name, "files", "output", 1)
+	filename := name + "_PROCESSED.zip"
+
+	err := os.WriteFile(filename, zipData, 0644)
+	if err != nil {
+		fmt.Println("Error saving zip file:", err)
+		return
+	}
+
+	fmt.Println("Zip file saved to", filename)
 }

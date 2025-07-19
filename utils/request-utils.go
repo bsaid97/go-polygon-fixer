@@ -28,27 +28,31 @@ func ReadMultiPartForm(r *http.Request, fileKey string) MultipartResult {
 			FeatureCollection: "",
 		},
 	}
-	for key, value := range r.MultipartForm.File {
-		if key == fileKey {
-			fileHeader = value[0]
-		}
-	}
-
-	for key, value := range r.MultipartForm.Value {
-		if key == "filepath" {
-			result.Properties.FilePath = value[0]
-		}
-
-		if key == "saveFile" {
-			if value[0] == "true" {
-				result.Properties.SaveFile = true
-			} else {
-				result.Properties.SaveFile = false
+	
+	// Check if MultipartForm was successfully parsed
+	if r.MultipartForm != nil {
+		for key, value := range r.MultipartForm.File {
+			if key == fileKey {
+				fileHeader = value[0]
 			}
 		}
 
-		if key == "featureCollection" {
-			result.Properties.FeatureCollection = value[0]
+		for key, value := range r.MultipartForm.Value {
+			if key == "filepath" {
+				result.Properties.FilePath = value[0]
+			}
+
+			if key == "saveFile" {
+				if value[0] == "true" {
+					result.Properties.SaveFile = true
+				} else {
+					result.Properties.SaveFile = false
+				}
+			}
+
+			if key == "featureCollection" {
+				result.Properties.FeatureCollection = value[0]
+			}
 		}
 	}
 
